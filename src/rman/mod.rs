@@ -3,7 +3,7 @@ mod fb;
 mod raw;
 use core::fmt::Display;
 pub use dl::*;
-use sha2_const::{Sha256, Sha512};
+use sha2::{Sha256, Sha512, Digest};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::{TryFrom, TryInto},
@@ -68,21 +68,21 @@ impl Default for HashType {
 
 impl HashType {
     fn compute_sha256(input: &[u8]) -> u64 {
-        let buffer = Sha256::new().update(input).finalize();
+        let buffer = Sha256::digest(input);
         let mut result = [0u8; 8];
         result[..8].copy_from_slice(&buffer[..8]);
         u64::from_le_bytes(result)
     }
 
     fn compute_sha512(input: &[u8]) -> u64 {
-        let buffer = Sha512::new().update(input).finalize();
+        let buffer = Sha512::digest(input);
         let mut result = [0u8; 8];
         result[..8].copy_from_slice(&buffer[..8]);
         u64::from_le_bytes(result)
     }
 
     fn compute_hkdf(input: &[u8]) -> u64 {
-        let key = Sha256::new().update(input).finalize();
+        let key = Sha256::digest(input);
         let mut ipad = [0u8; 64];
         let mut opad = [0u8; 64];
         ipad.fill(0x36);
@@ -92,13 +92,13 @@ impl HashType {
             opad[i] ^= key[i];
         }
         let index = u32::to_be_bytes(1);
-        let mut buffer = Sha256::new().update(&ipad).update(&index).finalize();
-        buffer = Sha256::new().update(&opad).update(&buffer).finalize();
+        let mut buffer = Sha256::new().chain(&ipad).chain(&index).finalize();
+        buffer = Sha256::new().chain(&opad).chain(&buffer).finalize();
         let mut result = [0u8; 8];
         result.copy_from_slice(&buffer[..8]);
         for _ in 0..31 {
-            buffer = Sha256::new().update(&ipad).update(&buffer).finalize();
-            buffer = Sha256::new().update(&opad).update(&buffer).finalize();
+            buffer = Sha256::new().chain(&ipad).chain(&buffer).finalize();
+            buffer = Sha256::new().chain(&opad).chain(&buffer).finalize();
             for i in 0..8 {
                 result[i] ^= buffer[i];
             }
@@ -186,6 +186,25 @@ impl File {
             self.download_checked(&mut file)
         } else {
             self.download_all()
+        }
+    }
+
+    pub fn verify(&self, dir: &str) -> bool {
+        if let Ok(mut file) = fs::File::open(format!("{}/{}", dir, &self.name)) {
+            let mut buffer = Vec::with_capacity(self.max_uncompressed as usize);
+            for chunk in &self.chunks {
+                buffer.resize(chunk.size_uncompressed as usize, 0u8);
+                if let Ok(_) = file.read_exact(&mut buffer) {
+                    if self.hash_type.compute(&buffer) != chunk.chunk_id {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
         }
     }
 }
